@@ -2,11 +2,12 @@
 package gzip
 
 import (
-	"compress/gzip"
 	"io/ioutil"
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/klauspost/compress/gzip"
 
 	"github.com/urfave/negroni"
 )
