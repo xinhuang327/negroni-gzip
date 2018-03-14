@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/klauspost/compress/gzip"
+	"compress/gzip"
 
 	"github.com/urfave/negroni"
 )
