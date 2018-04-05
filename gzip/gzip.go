@@ -4,9 +4,12 @@ package gzip
 import (
 	"io/ioutil"
 	"net/http"
+	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 
+	// "github.com/klauspost/compress/gzip"
 	"compress/gzip"
 
 	"github.com/urfave/negroni"
@@ -31,6 +34,7 @@ const (
 
 // gzipResponseWriter is the ResponseWriter that negroni.ResponseWriter is
 // wrapped in.
+// Should add a bytes.Buffer for get out the cache bytes.
 type gzipResponseWriter struct {
 	w *gzip.Writer
 	negroni.ResponseWriter
@@ -71,7 +75,7 @@ func (grw *gzipResponseWriter) Write(b []byte) (int, error) {
 	if len(grw.Header().Get(headerContentType)) == 0 {
 		grw.Header().Set(headerContentType, http.DetectContentType(b))
 	}
-	return grw.w.Write(b)
+	return grw.w.Write(b) // .w is the Gzip writer wrapping .ResponseWriter
 }
 
 type gzipResponseWriterCloseNotifier struct {
@@ -94,12 +98,18 @@ func newGzipResponseWriter(rw negroni.ResponseWriter, w *gzip.Writer) negroni.Re
 
 // handler struct contains the ServeHTTP method
 type handler struct {
-	pool sync.Pool
+	pool            sync.Pool
+	skipExtensions  []string
+	cacheExtensions []string
 }
 
 // Gzip returns a handler which will handle the Gzip compression in ServeHTTP.
 // Valid values for level are identical to those in the compress/gzip package.
 func Gzip(level int) *handler {
+	return GzipWithOptions(level, nil, nil)
+}
+
+func GzipWithOptions(level int, skipExtensions []string, cacheExtensions []string) *handler {
 	h := &handler{}
 	h.pool.New = func() interface{} {
 		gz, err := gzip.NewWriterLevel(ioutil.Discard, level)
@@ -108,13 +118,43 @@ func Gzip(level int) *handler {
 		}
 		return gz
 	}
+	// We can skip gzip for files like "png", "jpg", "woff2", "mp3", "mp4", "mov"
+	h.skipExtensions = skipExtensions
+	// We can cache gzip result for static files like "js", "css"
+	h.cacheExtensions = cacheExtensions
 	return h
 }
 
 // ServeHTTP wraps the http.ResponseWriter with a gzip.Writer.
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+
+	skipForExtension := false
+	urlExt := path.Ext(r.URL.Path)
+
+	if len(h.skipExtensions) > 0 {
+		for _, ext := range h.skipExtensions {
+			if urlExt == "."+ext {
+				skipForExtension = true
+				break
+			}
+		}
+	}
+
+	useCache := false
+	var cacheKey string
+
+	if len(h.cacheExtensions) > 0 {
+		for _, ext := range h.cacheExtensions {
+			if urlExt == "."+ext {
+				useCache = true
+				cacheKey = filepath.Base(r.URL.Path)
+				break
+			}
+		}
+	}
+
 	// Skip compression if the client doesn't accept gzip encoding.
-	if !strings.Contains(r.Header.Get(headerAcceptEncoding), encodingGzip) {
+	if !strings.Contains(r.Header.Get(headerAcceptEncoding), encodingGzip) || skipForExtension {
 		next(w, r)
 		return
 	}
@@ -139,6 +179,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.Ha
 	// and create the gzipResponseWriter.
 	nrw := negroni.NewResponseWriter(w)
 	grw := newGzipResponseWriter(nrw, gz)
+
+	if useCache {
+		nrw.Header().Set("X-GzipCacheKey", cacheKey)
+	}
 
 	// Call the next handler supplying the gzipResponseWriter instead of
 	// the original.
